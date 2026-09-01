@@ -39,8 +39,20 @@ export const readIndex = () => DataStore.get<Entry[]>(INDEX, store)
 const writeIndex = (entries: Entry[]) => DataStore.set(INDEX, entries, store);
 
 export const getFile = (id: string) => DataStore.get<Blob>(fileKey(id), store);
+export const getThumb = (id: string) => DataStore.get<Blob>(thumbKey(id), store);
 export const getThumbs = (ids: string[]) => DataStore.getMany<Blob>(ids.map(thumbKey), store);
 export const clear = () => DataStore.clear(store);
+
+export const toDataUrl = (blob: Blob) => new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(blob);
+});
+
+const fromDataUrl = (url: string) => fetch(url).then(r => r.blob());
+
+const newId = () => `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
 
 export const cropOf = (state: any): CropState => ({
     zoomRatio: state.zoomRatio,
@@ -105,6 +117,62 @@ async function forgetBlobs(id: string) {
 export async function forget(id: string) {
     await forgetBlobs(id);
     await writeIndex((await readIndex()).filter(entry => entry.id !== id));
+}
+
+export async function exportAll() {
+    const entries = await readIndex();
+    const pictures = await Promise.all(entries.map(async entry => ({
+        ...entry,
+        file: await toDataUrl((await getFile(entry.id))!),
+        thumb: await toDataUrl((await getThumb(entry.id))!)
+    })));
+
+    return JSON.stringify({ format: "BetterImageEditor", version: 1, pictures }, null, 4);
+}
+
+export async function importAll(json: string, limit: number) {
+    const parsed = JSON.parse(json);
+    if (parsed?.format !== "BetterImageEditor" || !Array.isArray(parsed.pictures)) {
+        throw new Error("that file is not a picture library");
+    }
+
+    const entries = await readIndex();
+    const seen = new Set(entries.map(entry => `${entry.kind}:${entry.group}:${entry.sig}`));
+    let added = 0;
+
+    for (const picture of parsed.pictures) {
+        const shelf = `${picture.kind}:${picture.group}:${picture.sig}`;
+        if (seen.has(shelf)) continue;
+        seen.add(shelf);
+
+        const { file, thumb, ...rest } = picture;
+        const id = newId();
+
+        await DataStore.set(fileKey(id), await fromDataUrl(file), store);
+        await DataStore.set(thumbKey(id), await fromDataUrl(thumb), store);
+
+        entries.push({ ...rest, id });
+        added++;
+    }
+
+    // same rule add() uses: newest kept, oldest off the end of each shelf
+    entries.sort((a, b) => b.added - a.added);
+
+    const counts = new Map<string, number>();
+    const kept: Entry[] = [];
+    const dropped: Entry[] = [];
+
+    for (const entry of entries) {
+        const shelf = `${entry.kind}:${entry.group}`;
+        const nth = (counts.get(shelf) ?? 0) + 1;
+        counts.set(shelf, nth);
+        (nth <= limit ? kept : dropped).push(entry);
+    }
+
+    await writeIndex(kept);
+    for (const entry of dropped) await forgetBlobs(entry.id);
+
+    return added;
 }
 
 export async function saveCrop(id: string, crop: CropState) {

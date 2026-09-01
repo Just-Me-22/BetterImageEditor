@@ -23,12 +23,22 @@ position are where you left them, so "same photo, a bit higher" is a nudge rathe
 - **Deletable recents.** Discord's archived avatars appear on the cropped shelf with a trash
   button, which removes them from Discord's servers through Discord's own endpoint. That one
   always asks first, because it cannot be undone.
+- **Import and export.** Carry your pictures and their crop positions to another device in one
+  file.
+
+Picking something off the cropped shelf skips the crop window, since it is already framed, and
+goes straight to the profile editor. Originals open the cropper with your last framing restored.
+Either way you still press Save Changes yourself, the same as picking a file.
 
 Right click a picture, or use the trash button in its corner, to remove it. Hold Shift to skip
 the confirmation on your own pictures.
 
 Everything is stored in an IndexedDB database belonging to the plugin. Nothing is uploaded
 anywhere, and full size originals stay on your machine.
+
+Importing merges. Pictures you already have are skipped, so the same file can be imported twice
+without making duplicates, and nothing already on the device is thrown away. Discord's own
+archive is never touched in either direction.
 
 ## Settings
 
@@ -39,6 +49,7 @@ anywhere, and full size originals stay on your machine.
 | Keep a cropped copy | on | Saves the result each time you finish a crop |
 | Ask first | off | Asks before keeping the cropped copy instead of doing it quietly |
 | Show Discord's recents | on | Whether Discord's archived avatars appear on the cropped shelf |
+| Export, import | | Writes the whole library to a file, or merges one back in |
 | Clear saved pictures | | Throws away every picture and every remembered crop |
 
 ## License

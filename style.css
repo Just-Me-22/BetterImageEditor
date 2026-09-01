@@ -112,3 +112,8 @@
     .bie-thumb { transition: none; }
     .bie-item:hover .bie-thumb { transform: none; }
 }
+
+.bie-buttons {
+    display: flex;
+    gap: 8px;
+}

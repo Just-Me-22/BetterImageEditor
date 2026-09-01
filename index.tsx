@@ -11,10 +11,11 @@ import ErrorBoundary from "@components/ErrorBoundary";
 import { DeleteIcon } from "@components/Icons";
 import { Logger } from "@utils/Logger";
 import definePlugin, { OptionType } from "@utils/types";
+import { chooseFile, saveFile } from "@utils/web";
 import { findStoreLazy } from "@webpack";
-import { Alerts, Button, Constants, FluxDispatcher, React, ReactDOM, RestAPI, useCallback, useEffect, useRef, useState, UserStore, useStateFromStores } from "@webpack/common";
+import { Alerts, Button, Constants, FluxDispatcher, React, ReactDOM, RestAPI, Toasts, useCallback, useEffect, useRef, useState, UserStore, useStateFromStores } from "@webpack/common";
 
-import { add, clear, cropOf, CropState, Entry, forget, getFile, getThumbs, Group, Kind, readIndex, saveCrop } from "./library";
+import { add, clear, cropOf, CropState, Entry, exportAll, forget, getFile, getThumbs, Group, importAll, Kind, readIndex, saveCrop, toDataUrl } from "./library";
 
 interface RecentAvatar {
     id: string;
@@ -59,6 +60,16 @@ const settings = definePluginSettings({
         description: "Show Discord's own recent avatars on the cropped shelf in the editor",
         default: true
     },
+    transfer: {
+        type: OptionType.COMPONENT,
+        description: "Carry your pictures, and how each one is framed, to another device",
+        component: () => (
+            <div className="bie-buttons">
+                <Button color={Button.Colors.PRIMARY} onClick={exportLibrary}>Export to a file</Button>
+                <Button color={Button.Colors.PRIMARY} onClick={importLibrary}>Import from a file</Button>
+            </div>
+        )
+    },
     clearLibrary: {
         type: OptionType.COMPONENT,
         description: "Throw away every picture you have saved",
@@ -95,6 +106,63 @@ const croppedLabel = (kind: Kind) => kind === "banner" ? "Cropped banners" : "Cr
 
 function recentUrl(avatar: RecentAvatar, userId: string, size: number) {
     return `https://cdn.discordapp.com/avatars/${userId}/archived/${avatar.id}/${avatar.storageHash}.webp?size=${size}`;
+}
+
+// taking over Discord's slot on the picker also took away the component that asked for
+// the archive, so this does what theirs did. the store's own guard stops it repeating.
+async function fetchRecents() {
+    if (!RecentAvatarsStore.shouldFetch) return;
+
+    FluxDispatcher.dispatch({ type: "RECENT_AVATARS_FETCH_START" });
+    try {
+        const { body } = await RestAPI.get({ url: Constants.Endpoints.RECENT_AVATARS });
+        FluxDispatcher.dispatch({
+            type: "RECENT_AVATARS_FETCH_SUCCESS",
+            avatars: body.avatars.map(({ storage_hash, ...rest }: any) => ({ ...rest, storageHash: storage_hash }))
+        });
+    } catch (err) {
+        FluxDispatcher.dispatch({ type: "RECENT_AVATARS_FETCH_FAILURE", error: err });
+        logger.error("could not load Discord's recent avatars", err);
+    }
+}
+
+const FILENAME = "better-image-editor.json";
+
+async function exportLibrary() {
+    try {
+        const data = new TextEncoder().encode(await exportAll());
+
+        if (IS_DISCORD_DESKTOP) DiscordNative.fileManager.saveWithDialog(data, FILENAME);
+        else saveFile(new File([data], FILENAME, { type: "application/json" }));
+    } catch (err) {
+        logger.error("could not export the library", err);
+        Toasts.show(Toasts.create("Could not export your pictures", Toasts.Type.FAILURE));
+    }
+}
+
+async function readChosenFile() {
+    if (!IS_DISCORD_DESKTOP) return (await chooseFile("application/json"))?.text() ?? null;
+
+    const [file] = await DiscordNative.fileManager.openFiles({
+        filters: [{ name: "Picture library", extensions: ["json"] }]
+    });
+    return file ? new TextDecoder().decode(file.data) : null;
+}
+
+async function importLibrary() {
+    try {
+        const json = await readChosenFile();
+        if (!json) return;
+
+        const added = await importAll(json, settings.store.librarySize);
+        Toasts.show(Toasts.create(
+            added ? `Added ${added} picture${added === 1 ? "" : "s"}` : "Nothing new in that file",
+            Toasts.Type.SUCCESS
+        ));
+    } catch (err) {
+        logger.error("could not import the library", err);
+        Toasts.show(Toasts.create("Could not read that file", Toasts.Type.FAILURE));
+    }
 }
 
 async function toFile(url: string, name: string, type = "image/webp") {
@@ -208,8 +276,17 @@ function Shelf({ kind, group, entries, thumbs, activeId, withRecents, onGroup, o
 }) {
     const recents: RecentAvatar[] = useStateFromStores([RecentAvatarsStore], () => RecentAvatarsStore.getAvatars());
     const user = UserStore.getCurrentUser();
-    const showRecents = withRecents && kind === "avatar" && group === "cropped"
-        && settings.use(["showDiscordRecents"]).showDiscordRecents && user && recents?.length;
+
+    // every hook here runs unconditionally. folding settings.use into the && chain below
+    // short-circuits it away on the originals tab and changes the hook count between renders.
+    const { showDiscordRecents } = settings.use(["showDiscordRecents"]);
+    const wantsRecents = withRecents && kind === "avatar";
+
+    useEffect(() => {
+        if (wantsRecents) fetchRecents();
+    }, [wantsRecents]);
+
+    const showRecents = Boolean(wantsRecents && group === "cropped" && showDiscordRecents && user && recents.length);
 
     return (
         <div className={`bie-panel bie-${kind}`}>
@@ -313,7 +390,11 @@ function askToDeleteRecent(avatar: RecentAvatar) {
     });
 }
 
-function PickerShelf({ kind, open }: { kind: Kind; open(imageUri: string, file: File): void; }) {
+function PickerShelf({ kind, open, complete }: {
+    kind: Kind;
+    open(imageUri: string, file: File): void;
+    complete(result: { imageUri: string; file: File; }): void;
+}) {
     const { group, setGroup, entries, thumbs, bump, track } = useLibrary(kind);
     const onForget = useForget(bump);
 
@@ -328,8 +409,13 @@ function PickerShelf({ kind, open }: { kind: Kind; open(imageUri: string, file: 
         const blob = await getFile(entry.id);
         if (!blob) return;
 
-        hand(entry.id, new File([blob], entry.name, { type: blob.type }), settings.store.rememberCrop ? entry.crop ?? null : null);
-    }, [hand]);
+        const file = new File([blob], entry.name, { type: blob.type });
+
+        // already framed, so it goes straight to the profile editor without the cropper
+        if (entry.group === "cropped") return complete({ imageUri: await toDataUrl(blob), file });
+
+        hand(entry.id, file, settings.store.rememberCrop ? entry.crop ?? null : null);
+    }, [hand, complete]);
 
     const accept = useCallback(async (file: File) => {
         try {
@@ -346,11 +432,12 @@ function PickerShelf({ kind, open }: { kind: Kind; open(imageUri: string, file: 
         if (!user) return;
 
         try {
-            hand(null, await toFile(recentUrl(avatar, user.id, 1024), `${avatar.storageHash}.webp`), null);
+            const file = await toFile(recentUrl(avatar, user.id, 1024), `${avatar.storageHash}.webp`);
+            complete({ imageUri: await toDataUrl(file), file });
         } catch (err) {
             logger.error("could not load that avatar", err);
         }
-    }, [hand]);
+    }, [complete]);
 
     usePasteAndDrop(accept, useCallback(() => editorsOpen === 0, []));
 
@@ -552,8 +639,8 @@ export default definePlugin({
             find: 'displayName="RecentAvatarsStore"',
             replacement: {
                 // takes over the slot Discord renders its own recent avatars into
-                match: /(uploadType:(\i),guild:\i,handleOpenImageEditingModal:(\i),[\s\S]{0,500}?)\i&&\(0,\i\.jsx\)\(\i,\{onComplete:\i,returnRef:\i\}\)/,
-                replace: "$1$self.pickerRow($2,$3)"
+                match: /(uploadType:(\i),guild:\i,handleOpenImageEditingModal:(\i),[\s\S]{0,500}?)\i&&\(0,\i\.jsx\)\(\i,\{onComplete:(\i),returnRef:\i\}\)/,
+                replace: "$1$self.pickerRow($2,$3,$4)"
             }
         }
     ],
@@ -563,10 +650,10 @@ export default definePlugin({
         return wrapped;
     },
 
-    pickerRow(uploadType: string, open: (imageUri: string, file: File) => void) {
+    pickerRow(uploadType: string, open: (imageUri: string, file: File) => void, complete: (result: any) => void) {
         return (
             <ErrorBoundary noop key="bie-picker">
-                <PickerShelf kind={kindOf(uploadType)} open={open} />
+                <PickerShelf kind={kindOf(uploadType)} open={open} complete={complete} />
             </ErrorBoundary>
         );
     },
