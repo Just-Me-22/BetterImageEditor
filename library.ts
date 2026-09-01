@@ -11,10 +11,12 @@ const store = DataStore.createStore("BetterImageEditor", "library");
 export type Kind = "avatar" | "banner";
 export type Group = "original" | "cropped";
 
+// the shape of the cropper's own initialTransform prop. offsetRatio is a fraction of the
+// drag range rather than pixels, so it replays at any image size.
 export interface CropState {
     zoomRatio: number;
     imageRotation: number;
-    imageTransformCoordinates: { x: number; y: number; };
+    offsetRatio: { x: number; y: number; };
 }
 
 export interface Entry {
@@ -33,9 +35,14 @@ const thumbKey = (id: string) => `thumb:${id}`;
 
 const THUMB_MAX = 160;
 
-// entries saved before the cropped shelf existed carry no group, and they are all originals
+// entries saved before the cropped shelf existed carry no group, and they are all originals.
+// crops saved in pixels rather than ratios cannot be replayed, so they go.
 export const readIndex = () => DataStore.get<Entry[]>(INDEX, store)
-    .then(entries => (entries ?? []).map(entry => entry.group ? entry : { ...entry, group: "original" as Group }));
+    .then(entries => (entries ?? []).map(({ crop, ...entry }) => ({
+        ...entry,
+        group: entry.group ?? "original" as Group,
+        ...(crop?.offsetRatio ? { crop } : {})
+    })));
 const writeIndex = (entries: Entry[]) => DataStore.set(INDEX, entries, store);
 
 export const getFile = (id: string) => DataStore.get<Blob>(fileKey(id), store);
@@ -57,7 +64,10 @@ const newId = () => `${Date.now().toString(36)}${Math.random().toString(36).slic
 export const cropOf = (state: any): CropState => ({
     zoomRatio: state.zoomRatio,
     imageRotation: state.imageRotation,
-    imageTransformCoordinates: state.imageTransformCoordinates
+    offsetRatio: {
+        x: state.dragBoundaries.right ? state.imageTransformCoordinates.x / state.dragBoundaries.right : 0,
+        y: state.dragBoundaries.top ? state.imageTransformCoordinates.y / state.dragBoundaries.top : 0
+    }
 });
 
 // keeps the source aspect so the strip can crop it to a circle or a wide tile in CSS
@@ -173,6 +183,16 @@ export async function importAll(json: string, limit: number) {
     for (const entry of dropped) await forgetBlobs(entry.id);
 
     return added;
+}
+
+export async function forgetCrops() {
+    const entries = await readIndex();
+    const framed = entries.filter(entry => entry.crop);
+
+    for (const entry of framed) delete entry.crop;
+    await writeIndex(entries);
+
+    return framed.length;
 }
 
 export async function saveCrop(id: string, crop: CropState) {

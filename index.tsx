@@ -15,7 +15,7 @@ import { chooseFile, saveFile } from "@utils/web";
 import { findStoreLazy } from "@webpack";
 import { Alerts, Button, Constants, FluxDispatcher, React, ReactDOM, RestAPI, Toasts, useCallback, useEffect, useRef, useState, UserStore, useStateFromStores } from "@webpack/common";
 
-import { add, clear, cropOf, CropState, Entry, exportAll, forget, getFile, getThumbs, Group, importAll, Kind, readIndex, saveCrop, toDataUrl } from "./library";
+import { add, clear, cropOf, CropState, Entry, exportAll, forget, forgetCrops, getFile, getThumbs, Group, importAll, Kind, readIndex, saveCrop, toDataUrl } from "./library";
 
 interface RecentAvatar {
     id: string;
@@ -44,6 +44,30 @@ const settings = definePluginSettings({
         type: OptionType.BOOLEAN,
         description: "Restore the zoom and position you last used for a picture",
         default: true
+    },
+    forgetFraming: {
+        type: OptionType.COMPONENT,
+        description: "Drop every remembered crop and open each picture the way Discord would",
+        component: () => (
+            <Button
+                color={Button.Colors.PRIMARY}
+                onClick={() => Alerts.show({
+                    title: "Forget every remembered crop?",
+                    body: <p>Your pictures stay. Each one opens unframed from now on, until you crop it again.</p>,
+                    confirmColor: Button.Colors.RED,
+                    confirmText: "Forget",
+                    cancelText: "Cancel",
+                    onConfirm: () => forgetCrops()
+                        .then(count => Toasts.show(Toasts.create(
+                            count ? `Forgot the framing on ${count} picture${count === 1 ? "" : "s"}` : "Nothing was framed",
+                            Toasts.Type.SUCCESS
+                        )))
+                        .catch(err => logger.error("could not forget the remembered crops", err))
+                })}
+            >
+                Forget remembered framing
+            </Button>
+        )
     },
     saveCropped: {
         type: OptionType.BOOLEAN,
@@ -91,12 +115,11 @@ const settings = definePluginSettings({
     }
 });
 
-// the cropper keeps its crop in a useReducer we cannot reach from outside, so the patch
-// hands it through these two. handoff marks a picture the picker already dealt with, so
-// the editor does not file a second copy of it.
-let pendingCrop: CropState | null = null;
+// the patch wraps the cropper's reducer purely to read the crop back out. putting a crop
+// in is done with Discord's own initialTransform prop. handoff marks a picture the picker
+// already dealt with, so the editor does not file a second copy of it.
 let liveCrop: any = null;
-let handoff: { id: string | null; } | null = null;
+let handoff: { id: string | null; transform: CropState | null; } | null = null;
 
 const spied = new WeakMap<Function, Function>();
 
@@ -395,15 +418,16 @@ function PickerShelf({ kind, open, complete }: {
     open(imageUri: string, file: File): void;
     complete(result: { imageUri: string; file: File; }): void;
 }) {
-    const { group, setGroup, entries, thumbs, bump, track } = useLibrary(kind);
+    const { group, setGroup, entries, thumbs, bump } = useLibrary(kind);
     const onForget = useForget(bump);
 
-    const hand = useCallback((id: string | null, file: File, crop: CropState | null) => {
-        handoff = { id };
-        pendingCrop = crop;
-        liveCrop = crop;
-        open(track(URL.createObjectURL(file)), file);
-    }, [open, track]);
+    // a data URI, not an object URL: Discord only ever hands the cropper the former, and an
+    // object URL dies with whichever surface made it
+    const hand = useCallback(async (id: string | null, file: File, crop: CropState | null) => {
+        handoff = { id, transform: crop };
+        liveCrop = null;
+        open(await toDataUrl(file), file);
+    }, [open]);
 
     const onPick = useCallback(async (entry: Entry) => {
         const blob = await getFile(entry.id);
@@ -414,14 +438,14 @@ function PickerShelf({ kind, open, complete }: {
         // already framed, so it goes straight to the profile editor without the cropper
         if (entry.group === "cropped") return complete({ imageUri: await toDataUrl(blob), file });
 
-        hand(entry.id, file, settings.store.rememberCrop ? entry.crop ?? null : null);
+        await hand(entry.id, file, settings.store.rememberCrop ? entry.crop ?? null : null);
     }, [hand, complete]);
 
     const accept = useCallback(async (file: File) => {
         try {
             const id = await add(file, kind, "original", settings.store.librarySize);
             bump();
-            hand(id, file, null);
+            await hand(id, file, null);
         } catch (err) {
             logger.error("could not take that picture", err);
         }
@@ -461,10 +485,11 @@ function PickerShelf({ kind, open, complete }: {
 function EditorShelf({ Original, ownProps }: { Original: React.ComponentType<any>; ownProps: any; }) {
     const kind = kindOf(ownProps.uploadType);
 
-    const { group, setGroup, entries, thumbs, bump, track } = useLibrary(kind);
+    const { group, setGroup, entries, thumbs, bump } = useLibrary(kind);
     const onForget = useForget(bump);
 
     const [picked, setPicked] = useState<Picked | null>(null);
+    const [transform, setTransform] = useState<CropState | null>(null);
     const [slot, setSlot] = useState<HTMLElement | null>(null);
 
     const incomingId = useRef<string | null>(null);
@@ -475,11 +500,11 @@ function EditorShelf({ Original, ownProps }: { Original: React.ComponentType<any
     pickedId.current = picked?.id ?? null;
     pickedName.current = picked?.file.name ?? ownProps.file?.name ?? null;
 
-    const show = useCallback((id: string, file: File, crop: CropState | null) => {
-        pendingCrop = crop;
-        liveCrop = crop;
-        setPicked({ id, uri: track(URL.createObjectURL(file)), file });
-    }, [track]);
+    const show = useCallback(async (id: string, file: File, crop: CropState | null) => {
+        liveCrop = null;
+        setTransform(crop);
+        setPicked({ id, uri: await toDataUrl(file), file });
+    }, []);
 
     useEffect(() => {
         if (captured.current) return;
@@ -488,9 +513,14 @@ function EditorShelf({ Original, ownProps }: { Original: React.ComponentType<any
         // the picker shelf already dealt with this one
         if (handoff) {
             incomingId.current = handoff.id;
+            setTransform(handoff.transform);
             handoff = null;
             return;
         }
+
+        // a fresh picture inherits no framing. leaving the last one in place would save it
+        // onto this picture the moment Apply is pressed, even untouched.
+        liveCrop = null;
 
         if (!(ownProps.file instanceof File)) return;
 
@@ -525,7 +555,7 @@ function EditorShelf({ Original, ownProps }: { Original: React.ComponentType<any
             const id = await add(file, kind, "original", settings.store.librarySize);
             setGroup("original");
             bump();
-            show(id, file, null);
+            await show(id, file, null);
         } catch (err) {
             logger.error("could not take that picture", err);
         }
@@ -537,7 +567,7 @@ function EditorShelf({ Original, ownProps }: { Original: React.ComponentType<any
         const blob = await getFile(entry.id);
         if (!blob) return;
 
-        show(entry.id, new File([blob], entry.name, { type: blob.type }), settings.store.rememberCrop ? entry.crop ?? null : null);
+        await show(entry.id, new File([blob], entry.name, { type: blob.type }), settings.store.rememberCrop ? entry.crop ?? null : null);
     }, [show]);
 
     const onPickRecent = useCallback(async (avatar: RecentAvatar) => {
@@ -545,7 +575,7 @@ function EditorShelf({ Original, ownProps }: { Original: React.ComponentType<any
         if (!user) return;
 
         try {
-            show(avatar.id, await toFile(recentUrl(avatar, user.id, 1024), `${avatar.storageHash}.webp`), null);
+            await show(avatar.id, await toFile(recentUrl(avatar, user.id, 1024), `${avatar.storageHash}.webp`), null);
         } catch (err) {
             logger.error("could not load that avatar", err);
         }
@@ -585,8 +615,8 @@ function EditorShelf({ Original, ownProps }: { Original: React.ComponentType<any
     }, [ownProps.onCrop, keepCropped]);
 
     const props = picked
-        ? { ...ownProps, imageUri: picked.uri, file: picked.file, originalAsset: null, onCrop }
-        : { ...ownProps, onCrop };
+        ? { ...ownProps, imageUri: picked.uri, file: picked.file, originalAsset: null, onCrop, initialTransform: transform }
+        : { ...ownProps, onCrop, initialTransform: transform ?? ownProps.initialTransform };
 
     return (
         <>
@@ -631,7 +661,7 @@ export default definePlugin({
                 },
                 {
                     match: /useReducer\((\i),(\i)\)/,
-                    replace: "useReducer($self.spyCrop($1),$self.seedCrop($2))"
+                    replace: "useReducer($self.spyCrop($1),$2)"
                 }
             ]
         },
@@ -665,13 +695,5 @@ export default definePlugin({
             spied.set(reducer, seen);
         }
         return seen;
-    },
-
-    seedCrop(initial: any) {
-        if (!pendingCrop) return initial;
-
-        const crop = pendingCrop;
-        pendingCrop = null;
-        return { ...initial, ...crop };
     }
 });

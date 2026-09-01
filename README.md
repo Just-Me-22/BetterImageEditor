@@ -49,8 +49,26 @@ archive is never touched in either direction.
 | Keep a cropped copy | on | Saves the result each time you finish a crop |
 | Ask first | off | Asks before keeping the cropped copy instead of doing it quietly |
 | Show Discord's recents | on | Whether Discord's archived avatars appear on the cropped shelf |
+| Forget remembered framing | | Drops every saved crop and keeps the pictures |
 | Export, import | | Writes the whole library to a file, or merges one back in |
 | Clear saved pictures | | Throws away every picture and every remembered crop |
+
+## Screenshots
+
+The avatar picker, on each shelf. Discord's own archived avatars sit on the cropped one, with
+a trash button they never had:
+
+<p>
+  <img src="screenshots/picker-avatar-originals.png" width="330" alt="Avatar picker, originals shelf">
+  <img src="screenshots/picker-avatar-cropped.png" width="330" alt="Avatar picker, cropped shelf">
+</p>
+
+Banners get the same two shelves. Discord offers no recent images for banners at all:
+
+<p>
+  <img src="screenshots/picker-banner-originals.png" width="330" alt="Banner picker, originals shelf">
+  <img src="screenshots/picker-banner-cropped.png" width="330" alt="Banner picker, cropped shelf">
+</p>
 
 ## License
 
