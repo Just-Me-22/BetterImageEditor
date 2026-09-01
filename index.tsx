@@ -15,7 +15,7 @@ import { chooseFile, saveFile } from "@utils/web";
 import { findStoreLazy } from "@webpack";
 import { Alerts, Button, Constants, FluxDispatcher, React, ReactDOM, RestAPI, Toasts, useCallback, useEffect, useRef, useState, UserStore, useStateFromStores } from "@webpack/common";
 
-import { add, clear, cropOf, CropState, Entry, exportAll, forget, forgetCrops, getFile, getThumbs, Group, importAll, Kind, readIndex, saveCrop, toDataUrl } from "./library";
+import { add, clear, cropOf, CropState, Entry, exportAll, forget, forgetCrops, getFile, getThumbs, Group, importAll, Kind, previousApplied, readIndex, recordApplied, saveCrop, toDataUrl, togglePin } from "./library";
 
 interface RecentAvatar {
     id: string;
@@ -120,6 +120,7 @@ const settings = definePluginSettings({
 // already dealt with, so the editor does not file a second copy of it.
 let liveCrop: any = null;
 let handoff: { id: string | null; transform: CropState | null; } | null = null;
+let handedOver: { id: string; kind: Kind; } | null = null;
 
 const spied = new WeakMap<Function, Function>();
 
@@ -148,6 +149,12 @@ async function fetchRecents() {
         logger.error("could not load Discord's recent avatars", err);
     }
 }
+
+const PinIcon = (props: any) => (
+    <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden {...props}>
+        <path d="M15 4V9l3 3v2h-5v7l-1 1-1-1v-7H6v-2l3-3V4H8V2h8v2z" />
+    </svg>
+);
 
 const FILENAME = "better-image-editor.json";
 
@@ -209,7 +216,9 @@ function useLibrary(kind: Kind) {
         let live = true;
 
         (async () => {
-            const mine = (await readIndex()).filter(entry => entry.kind === kind && entry.group === group);
+            const mine = (await readIndex())
+                .filter(entry => entry.kind === kind && entry.group === group)
+                .sort((a, b) => Number(!!b.pinned) - Number(!!a.pinned));
             const blobs = await getThumbs(mine.map(entry => entry.id));
             if (!live) return;
 
@@ -284,7 +293,7 @@ function usePasteAndDrop(accept: (file: File) => void, active: () => boolean) {
     }, [accept, active]);
 }
 
-function Shelf({ kind, group, entries, thumbs, activeId, withRecents, onGroup, onPick, onForget, onPickRecent, onDeleteRecent }: {
+function Shelf({ kind, group, entries, thumbs, activeId, withRecents, onGroup, onPick, onPin, onForget, onPutBack, onPickRecent, onDeleteRecent }: {
     kind: Kind;
     group: Group;
     entries: Entry[];
@@ -293,7 +302,9 @@ function Shelf({ kind, group, entries, thumbs, activeId, withRecents, onGroup, o
     withRecents: boolean;
     onGroup(group: Group): void;
     onPick(entry: Entry): void;
+    onPin(entry: Entry): void;
     onForget(entry: Entry, immediate: boolean): void;
+    onPutBack?(): void;
     onPickRecent?(avatar: RecentAvatar): void;
     onDeleteRecent?(avatar: RecentAvatar): void;
 }) {
@@ -328,11 +339,18 @@ function Shelf({ kind, group, entries, thumbs, activeId, withRecents, onGroup, o
                     className={`bie-tab${group === "cropped" ? " bie-on" : ""}`}
                     onClick={() => onGroup("cropped")}
                 >{croppedLabel(kind)}</button>
+
+                {onPutBack && (
+                    <button type="button" className="bie-action" onClick={onPutBack}>
+                        Put back the last one
+                    </button>
+                )}
+
             </div>
 
             <div className="bie-strip" role="group" aria-label="Saved pictures">
                 {entries.map(entry => (
-                    <div key={entry.id} className="bie-item">
+                    <div key={entry.id} className={`bie-item${entry.pinned ? " bie-pinned" : ""}`}>
                         <button
                             type="button"
                             aria-label={entry.name}
@@ -353,6 +371,16 @@ function Shelf({ kind, group, entries, thumbs, activeId, withRecents, onGroup, o
                             onClick={event => onForget(entry, event.shiftKey)}
                         >
                             <DeleteIcon width={10} height={10} />
+                        </button>
+                        <button
+                            type="button"
+                            aria-pressed={!!entry.pinned}
+                            className={`bie-pin${entry.pinned ? " bie-on" : ""}`}
+                            aria-label={entry.pinned ? `Unpin ${entry.name}` : `Pin ${entry.name}`}
+                            title={entry.pinned ? "Pinned, so it never drops off the shelf" : "Pin so it never drops off the shelf"}
+                            onClick={() => onPin(entry)}
+                        >
+                            <PinIcon width={10} height={10} />
                         </button>
                     </div>
                 ))}
@@ -425,9 +453,18 @@ function PickerShelf({ kind, open, complete }: {
     // object URL dies with whichever surface made it
     const hand = useCallback(async (id: string | null, file: File, crop: CropState | null) => {
         handoff = { id, transform: crop };
+        if (id) handedOver = { id, kind };
         liveCrop = null;
         open(await toDataUrl(file), file);
     }, [open]);
+
+    const [putBack, setPutBack] = useState<Entry | null>(null);
+
+    useEffect(() => {
+        previousApplied(kind)
+            .then(setPutBack)
+            .catch(err => logger.error("could not read what you wore before", err));
+    }, [kind]);
 
     const onPick = useCallback(async (entry: Entry) => {
         const blob = await getFile(entry.id);
@@ -436,10 +473,17 @@ function PickerShelf({ kind, open, complete }: {
         const file = new File([blob], entry.name, { type: blob.type });
 
         // already framed, so it goes straight to the profile editor without the cropper
-        if (entry.group === "cropped") return complete({ imageUri: await toDataUrl(blob), file });
+        if (entry.group === "cropped") {
+            handedOver = { id: entry.id, kind };
+            return complete({ imageUri: await toDataUrl(blob), file });
+        }
 
         await hand(entry.id, file, settings.store.rememberCrop ? entry.crop ?? null : null);
-    }, [hand, complete]);
+    }, [hand, complete, kind]);
+
+    const onPin = useCallback((entry: Entry) => {
+        togglePin(entry.id).then(bump).catch(err => logger.error("could not pin that picture", err));
+    }, [bump]);
 
     const accept = useCallback(async (file: File) => {
         try {
@@ -475,7 +519,9 @@ function PickerShelf({ kind, open, complete }: {
             withRecents
             onGroup={setGroup}
             onPick={onPick}
+            onPin={onPin}
             onForget={onForget}
+            onPutBack={putBack ? () => onPick(putBack) : undefined}
             onPickRecent={onPickRecent}
             onDeleteRecent={askToDeleteRecent}
         />
@@ -489,7 +535,7 @@ function EditorShelf({ Original, ownProps }: { Original: React.ComponentType<any
     const onForget = useForget(bump);
 
     const [picked, setPicked] = useState<Picked | null>(null);
-    const [transform, setTransform] = useState<CropState | null>(null);
+    const [transform, setTransform] = useState<CropState | null>(() => handoff?.transform ?? null);
     const [slot, setSlot] = useState<HTMLElement | null>(null);
 
     const incomingId = useRef<string | null>(null);
@@ -513,7 +559,6 @@ function EditorShelf({ Original, ownProps }: { Original: React.ComponentType<any
         // the picker shelf already dealt with this one
         if (handoff) {
             incomingId.current = handoff.id;
-            setTransform(handoff.transform);
             handoff = null;
             return;
         }
@@ -570,6 +615,10 @@ function EditorShelf({ Original, ownProps }: { Original: React.ComponentType<any
         await show(entry.id, new File([blob], entry.name, { type: blob.type }), settings.store.rememberCrop ? entry.crop ?? null : null);
     }, [show]);
 
+    const onPin = useCallback((entry: Entry) => {
+        togglePin(entry.id).then(bump).catch(err => logger.error("could not pin that picture", err));
+    }, [bump]);
+
     const onPickRecent = useCallback(async (avatar: RecentAvatar) => {
         const user = UserStore.getCurrentUser();
         if (!user) return;
@@ -585,9 +634,10 @@ function EditorShelf({ Original, ownProps }: { Original: React.ComponentType<any
         const uri = result?.imageUri;
         if (typeof uri !== "string") return logger.warn("the cropper returned something that cannot be saved", result);
 
+        const source = pickedId.current ?? incomingId.current ?? undefined;
         const save = async () => {
             const stem = (pickedName.current ?? "picture").replace(/\.[^.]+$/, "");
-            await add(await toFile(uri, `${stem} (cropped)`), kind, "cropped", settings.store.librarySize);
+            await add(await toFile(uri, `${stem} (cropped)`), kind, "cropped", settings.store.librarySize, source);
             bump();
         };
         const run = () => save().catch(err => logger.error("could not keep the cropped copy", err));
@@ -605,6 +655,7 @@ function EditorShelf({ Original, ownProps }: { Original: React.ComponentType<any
 
     const onCrop = useCallback((...args: any[]) => {
         const id = pickedId.current ?? incomingId.current;
+        if (id) handedOver = { id, kind };
         if (id && liveCrop && settings.store.rememberCrop) {
             saveCrop(id, cropOf(liveCrop)).catch(err => logger.error("could not remember that crop", err));
         }
@@ -632,6 +683,7 @@ function EditorShelf({ Original, ownProps }: { Original: React.ComponentType<any
                         withRecents
                         onGroup={setGroup}
                         onPick={onPick}
+                        onPin={onPin}
                         onForget={onForget}
                         onPickRecent={onPickRecent}
                         onDeleteRecent={askToDeleteRecent}
@@ -643,6 +695,14 @@ function EditorShelf({ Original, ownProps }: { Original: React.ComponentType<any
     );
 }
 
+function onProfileSaved() {
+    if (!handedOver) return;
+
+    const { id, kind } = handedOver;
+    handedOver = null;
+    recordApplied(kind, id).catch(err => logger.error("could not note what you put on", err));
+}
+
 let wrapped: React.ComponentType<any> | null = null;
 
 export default definePlugin({
@@ -650,6 +710,14 @@ export default definePlugin({
     description: "Keeps your own pictures on the image picker and under the crop window, for avatars and banners, on an uncropped shelf and a cropped one. Remembers how you framed each picture, and takes a paste or a dropped file straight in.",
     authors: [{ name: "heart_menace", id: 281162701303185408n }],
     settings,
+
+    start() {
+        FluxDispatcher.subscribe("USER_PROFILE_SETTINGS_SUBMIT_SUCCESS", onProfileSaved);
+    },
+
+    stop() {
+        FluxDispatcher.unsubscribe("USER_PROFILE_SETTINGS_SUBMIT_SUCCESS", onProfileSaved);
+    },
 
     patches: [
         {

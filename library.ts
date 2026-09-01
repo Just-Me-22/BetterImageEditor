@@ -27,6 +27,8 @@ export interface Entry {
     sig: string;
     added: number;
     crop?: CropState;
+    pinned?: boolean;
+    from?: string;
 }
 
 const INDEX = "index";
@@ -96,25 +98,30 @@ function thumbnail(source: Blob) {
     });
 }
 
-export async function add(file: File, kind: Kind, group: Group, limit: number) {
+export async function add(file: File, kind: Kind, group: Group, limit: number, from?: string) {
     const sig = `${file.name}:${file.size}:${file.lastModified}`;
-    const entries = await readIndex();
+    const stored = await readIndex();
     const sameShelf = (entry: Entry) => entry.kind === kind && entry.group === group;
 
-    const known = entries.find(entry => sameShelf(entry) && entry.sig === sig);
+    const known = stored.find(entry => sameShelf(entry) && entry.sig === sig);
     if (known) return known.id;
 
-    const id = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+    // one cropped copy per source picture. a pinned copy is kept, since pinning is what you
+    // do to a framing you want back later.
+    const replaced = from ? stored.filter(entry => sameShelf(entry) && entry.from === from && !entry.pinned) : [];
+    const entries = stored.filter(entry => !replaced.includes(entry));
+
+    const id = newId();
     const thumb = await thumbnail(file);
 
     await DataStore.set(fileKey(id), file, store);
     await DataStore.set(thumbKey(id), thumb, store);
 
-    const next = [{ id, name: file.name, kind, group, sig, added: Date.now() }, ...entries];
-    const dropped = next.filter(sameShelf).slice(limit);
+    const next = [{ id, name: file.name, kind, group, sig, added: Date.now(), from }, ...entries];
+    const dropped = next.filter(entry => sameShelf(entry) && !entry.pinned).slice(limit);
 
     await writeIndex(next.filter(entry => !dropped.includes(entry)));
-    for (const entry of dropped) await forgetBlobs(entry.id);
+    for (const entry of [...dropped, ...replaced]) await forgetBlobs(entry.id);
 
     return id;
 }
@@ -173,6 +180,11 @@ export async function importAll(json: string, limit: number) {
     const dropped: Entry[] = [];
 
     for (const entry of entries) {
+        if (entry.pinned) {
+            kept.push(entry);
+            continue;
+        }
+
         const shelf = `${entry.kind}:${entry.group}`;
         const nth = (counts.get(shelf) ?? 0) + 1;
         counts.set(shelf, nth);
@@ -193,6 +205,31 @@ export async function forgetCrops() {
     await writeIndex(entries);
 
     return framed.length;
+}
+
+export async function togglePin(id: string) {
+    const entries = await readIndex();
+    const entry = entries.find(entry => entry.id === id);
+    if (!entry) return;
+
+    entry.pinned = !entry.pinned;
+    await writeIndex(entries);
+}
+
+// which pictures you have actually worn, newest first. recorded when Discord confirms the
+// profile saved, not when one is handed to the editor.
+const historyKey = (kind: Kind) => `history:${kind}`;
+
+export async function recordApplied(kind: Kind, id: string) {
+    const worn = await DataStore.get<string[]>(historyKey(kind), store) ?? [];
+    if (worn[0] === id) return;
+
+    await DataStore.set(historyKey(kind), [id, ...worn.filter(seen => seen !== id)].slice(0, 5), store);
+}
+
+export async function previousApplied(kind: Kind) {
+    const worn = await DataStore.get<string[]>(historyKey(kind), store) ?? [];
+    return (await readIndex()).find(entry => entry.id === worn[1]) ?? null;
 }
 
 export async function saveCrop(id: string, crop: CropState) {
