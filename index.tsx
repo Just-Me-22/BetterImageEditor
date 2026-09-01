@@ -15,7 +15,7 @@ import { chooseFile, saveFile } from "@utils/web";
 import { findStoreLazy } from "@webpack";
 import { Alerts, Button, Constants, FluxDispatcher, React, ReactDOM, RestAPI, Toasts, useCallback, useEffect, useRef, useState, UserStore, useStateFromStores } from "@webpack/common";
 
-import { add, clear, cropOf, CropState, Entry, exportAll, forget, forgetCrops, getFile, getThumbs, Group, importAll, Kind, previousApplied, readIndex, recordApplied, saveCrop, toDataUrl, togglePin } from "./library";
+import { add, clear, CropState, currentApplied, Entry, exportAll, forget, forgetCrops, getFile, getThumbs, Group, importAll, Kind, previousApplied, readIndex, recordApplied, saveCrop, toDataUrl, togglePin } from "./library";
 
 interface RecentAvatar {
     id: string;
@@ -115,18 +115,38 @@ const settings = definePluginSettings({
     }
 });
 
-// the patch wraps the cropper's reducer purely to read the crop back out. putting a crop
-// in is done with Discord's own initialTransform prop. handoff marks a picture the picker
-// already dealt with, so the editor does not file a second copy of it.
-let liveCrop: any = null;
+// handoff marks a picture the picker already dealt with, so the editor does not file a
+// second copy of it. handedOver is what a confirmed profile save should be credited to.
 let handoff: { id: string | null; transform: CropState | null; } | null = null;
 let handedOver: { id: string; kind: Kind; } | null = null;
 
-const spied = new WeakMap<Function, Function>();
+const kindOf = (uploadType: string): Kind => uploadType || "AVATAR";
 
-const kindOf = (uploadType: string): Kind => uploadType === "BANNER" ? "banner" : "avatar";
+// the cropper masks these to a square; everything else it crops wide
+const SQUARE = new Set(["AVATAR", "AVATAR_DECORATION", "GUILD_ICON", "PERSONAL_WIDGET_FIELD"]);
 
-const croppedLabel = (kind: Kind) => kind === "banner" ? "Cropped banners" : "Cropped avatars";
+const KIND_NAMES: Record<string, string> = {
+    AVATAR: "avatars",
+    BANNER: "banners",
+    GUILD_ICON: "server icons",
+    GUILD_BANNER: "server banners",
+    SCHEDULED_EVENT_IMAGE: "event covers",
+    HOME_HEADER: "home headers",
+    AVATAR_DECORATION: "decorations",
+    PERSONAL_WIDGET_COVER: "widget covers",
+    PERSONAL_WIDGET_FIELD: "widget images",
+    VIDEO_BACKGROUND: "video backgrounds"
+};
+
+const kindName = (kind: Kind) => KIND_NAMES[kind] ?? kind.toLowerCase().replace(/_/g, " ");
+const croppedLabel = (kind: Kind) => `Cropped ${kindName(kind)}`;
+
+const EXTENSIONS: Record<string, string> = {
+    "image/gif": "gif",
+    "image/png": "png",
+    "image/jpeg": "jpg",
+    "image/webp": "webp"
+};
 
 function recentUrl(avatar: RecentAvatar, userId: string, size: number) {
     return `https://cdn.discordapp.com/avatars/${userId}/archived/${avatar.id}/${avatar.storageHash}.webp?size=${size}`;
@@ -205,6 +225,7 @@ function useLibrary(kind: Kind) {
     const [version, setVersion] = useState(0);
     const [entries, setEntries] = useState<Entry[]>([]);
     const [thumbs, setThumbs] = useState<Record<string, string>>({});
+    const [worn, setWorn] = useState<string | null>(null);
 
     const urls = useRef<string[]>([]);
     const bump = useCallback(() => setVersion(v => v + 1), []);
@@ -235,7 +256,13 @@ function useLibrary(kind: Kind) {
         return () => { live = false; };
     }, [kind, group, version]);
 
-    return { group, setGroup, entries, thumbs, bump, track };
+    useEffect(() => {
+        currentApplied(kind)
+            .then(setWorn)
+            .catch(err => logger.error("could not read what you are wearing", err));
+    }, [kind, version]);
+
+    return { group, setGroup, entries, thumbs, worn, bump, track };
 }
 
 function useForget(bump: () => void) {
@@ -293,12 +320,13 @@ function usePasteAndDrop(accept: (file: File) => void, active: () => boolean) {
     }, [accept, active]);
 }
 
-function Shelf({ kind, group, entries, thumbs, activeId, withRecents, onGroup, onPick, onPin, onForget, onPutBack, onPickRecent, onDeleteRecent }: {
+function Shelf({ kind, group, entries, thumbs, activeId, wornId, withRecents, onGroup, onPick, onPin, onForget, onPutBack, onPickRecent, onDeleteRecent }: {
     kind: Kind;
     group: Group;
     entries: Entry[];
     thumbs: Record<string, string>;
     activeId: string | null;
+    wornId: string | null;
     withRecents: boolean;
     onGroup(group: Group): void;
     onPick(entry: Entry): void;
@@ -314,16 +342,17 @@ function Shelf({ kind, group, entries, thumbs, activeId, withRecents, onGroup, o
     // every hook here runs unconditionally. folding settings.use into the && chain below
     // short-circuits it away on the originals tab and changes the hook count between renders.
     const { showDiscordRecents } = settings.use(["showDiscordRecents"]);
-    const wantsRecents = withRecents && kind === "avatar";
+    const wantsRecents = withRecents && kind === "AVATAR";
 
     useEffect(() => {
         if (wantsRecents) fetchRecents();
     }, [wantsRecents]);
 
     const showRecents = Boolean(wantsRecents && group === "cropped" && showDiscordRecents && user && recents.length);
+    const shape = SQUARE.has(kind) ? "bie-square" : "bie-wide";
 
     return (
-        <div className={`bie-panel bie-${kind}`}>
+        <div className={`bie-panel ${shape}`}>
             <div className="bie-tabs" role="tablist">
                 <button
                     type="button"
@@ -350,11 +379,12 @@ function Shelf({ kind, group, entries, thumbs, activeId, withRecents, onGroup, o
 
             <div className="bie-strip" role="group" aria-label="Saved pictures">
                 {entries.map(entry => (
-                    <div key={entry.id} className={`bie-item${entry.pinned ? " bie-pinned" : ""}`}>
+                    <div key={entry.id} className={`bie-item${entry.pinned ? " bie-pinned" : ""}${entry.id === wornId ? " bie-worn" : ""}${entry.type === "image/gif" ? " bie-animated" : ""}`}>
                         <button
                             type="button"
                             aria-label={entry.name}
-                            title={entry.name}
+                            title={entry.id === wornId ? `${entry.name}
+You are wearing this` : entry.name}
                             className={`bie-thumb${activeId === entry.id ? " bie-active" : ""}`}
                             style={{ backgroundImage: `url(${thumbs[entry.id]})` }}
                             onClick={() => onPick(entry)}
@@ -446,7 +476,7 @@ function PickerShelf({ kind, open, complete }: {
     open(imageUri: string, file: File): void;
     complete(result: { imageUri: string; file: File; }): void;
 }) {
-    const { group, setGroup, entries, thumbs, bump } = useLibrary(kind);
+    const { group, setGroup, entries, thumbs, worn, bump } = useLibrary(kind);
     const onForget = useForget(bump);
 
     // a data URI, not an object URL: Discord only ever hands the cropper the former, and an
@@ -454,7 +484,6 @@ function PickerShelf({ kind, open, complete }: {
     const hand = useCallback(async (id: string | null, file: File, crop: CropState | null) => {
         handoff = { id, transform: crop };
         if (id) handedOver = { id, kind };
-        liveCrop = null;
         open(await toDataUrl(file), file);
     }, [open]);
 
@@ -516,6 +545,7 @@ function PickerShelf({ kind, open, complete }: {
             entries={entries}
             thumbs={thumbs}
             activeId={null}
+            wornId={worn}
             withRecents
             onGroup={setGroup}
             onPick={onPick}
@@ -531,7 +561,7 @@ function PickerShelf({ kind, open, complete }: {
 function EditorShelf({ Original, ownProps }: { Original: React.ComponentType<any>; ownProps: any; }) {
     const kind = kindOf(ownProps.uploadType);
 
-    const { group, setGroup, entries, thumbs, bump } = useLibrary(kind);
+    const { group, setGroup, entries, thumbs, worn, bump } = useLibrary(kind);
     const onForget = useForget(bump);
 
     const [picked, setPicked] = useState<Picked | null>(null);
@@ -547,7 +577,6 @@ function EditorShelf({ Original, ownProps }: { Original: React.ComponentType<any
     pickedName.current = picked?.file.name ?? ownProps.file?.name ?? null;
 
     const show = useCallback(async (id: string, file: File, crop: CropState | null) => {
-        liveCrop = null;
         setTransform(crop);
         setPicked({ id, uri: await toDataUrl(file), file });
     }, []);
@@ -562,10 +591,6 @@ function EditorShelf({ Original, ownProps }: { Original: React.ComponentType<any
             handoff = null;
             return;
         }
-
-        // a fresh picture inherits no framing. leaving the last one in place would save it
-        // onto this picture the moment Apply is pressed, even untouched.
-        liveCrop = null;
 
         if (!(ownProps.file instanceof File)) return;
 
@@ -637,7 +662,10 @@ function EditorShelf({ Original, ownProps }: { Original: React.ComponentType<any
         const source = pickedId.current ?? incomingId.current ?? undefined;
         const save = async () => {
             const stem = (pickedName.current ?? "picture").replace(/\.[^.]+$/, "");
-            await add(await toFile(uri, `${stem} (cropped)`), kind, "cropped", settings.store.librarySize, source);
+            const blob = await fetch(uri).then(r => r.blob());
+            const name = `${stem} (cropped).${EXTENSIONS[blob.type] ?? "png"}`;
+
+            await add(new File([blob], name, { type: blob.type }), kind, "cropped", settings.store.librarySize, source);
             bump();
         };
         const run = () => save().catch(err => logger.error("could not keep the cropped copy", err));
@@ -655,9 +683,11 @@ function EditorShelf({ Original, ownProps }: { Original: React.ComponentType<any
 
     const onCrop = useCallback((...args: any[]) => {
         const id = pickedId.current ?? incomingId.current;
+        const transform = args[0]?.transform;
+
         if (id) handedOver = { id, kind };
-        if (id && liveCrop && settings.store.rememberCrop) {
-            saveCrop(id, cropOf(liveCrop)).catch(err => logger.error("could not remember that crop", err));
+        if (id && transform && settings.store.rememberCrop) {
+            saveCrop(id, transform).catch(err => logger.error("could not remember that crop", err));
         }
 
         if (settings.store.saveCropped) keepCropped(args[0]);
@@ -680,6 +710,7 @@ function EditorShelf({ Original, ownProps }: { Original: React.ComponentType<any
                         entries={entries}
                         thumbs={thumbs}
                         activeId={picked?.id ?? null}
+                        wornId={worn}
                         withRecents
                         onGroup={setGroup}
                         onPick={onPick}
@@ -722,16 +753,10 @@ export default definePlugin({
     patches: [
         {
             find: '"SET_IMAGE_ZOOM_RATIO"',
-            replacement: [
-                {
-                    match: /\{default:\(\)=>(\i)\}/,
-                    replace: "{default:()=>$self.wrapEditor($1)}"
-                },
-                {
-                    match: /useReducer\((\i),(\i)\)/,
-                    replace: "useReducer($self.spyCrop($1),$2)"
-                }
-            ]
+            replacement: {
+                match: /\{default:\(\)=>(\i)\}/,
+                replace: "{default:()=>$self.wrapEditor($1)}"
+            }
         },
         {
             find: 'displayName="RecentAvatarsStore"',
@@ -754,14 +779,5 @@ export default definePlugin({
                 <PickerShelf kind={kindOf(uploadType)} open={open} complete={complete} />
             </ErrorBoundary>
         );
-    },
-
-    spyCrop(reducer: Function) {
-        let seen = spied.get(reducer);
-        if (!seen) {
-            seen = (state: any, action: any) => (liveCrop = reducer(state, action));
-            spied.set(reducer, seen);
-        }
-        return seen;
     }
 });

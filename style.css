@@ -51,8 +51,18 @@
     min-height: 38px;
     overflow-x: auto;
     overflow-y: hidden;
-    scrollbar-width: thin;
 }
+
+/* the bar keeps its space so nothing shifts, and only shows itself on hover */
+.bie-strip::-webkit-scrollbar { height: 6px; }
+.bie-strip::-webkit-scrollbar-track { background: transparent; }
+
+.bie-strip::-webkit-scrollbar-thumb {
+    background: transparent;
+    border-radius: 3px;
+}
+
+.bie-strip:hover::-webkit-scrollbar-thumb { background: var(--background-modifier-accent); }
 
 .bie-item {
     position: relative;
@@ -73,13 +83,13 @@
     transition: border-color .1s ease-out, transform .1s ease-out;
 }
 
-.bie-banner .bie-thumb {
+.bie-wide .bie-thumb {
     width: 96px;
     height: 40px;
     border-radius: 6px;
 }
 
-.bie-banner .bie-strip {
+.bie-wide .bie-strip {
     gap: 8px;
 }
 
@@ -186,3 +196,22 @@
 .bie-pin:hover { color: var(--interactive-active); }
 .bie-pin.bie-on { color: var(--brand-500, #5865f2); }
 .bie-pin:focus-visible { outline: 2px solid var(--focus-primary); }
+
+.bie-worn .bie-thumb {
+    box-shadow: 0 0 0 2px var(--status-positive, #23a55a);
+}
+
+.bie-animated::after {
+    content: "GIF";
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    padding: 0 3px;
+    border-radius: 3px;
+    background: var(--background-tertiary);
+    color: var(--text-muted);
+    font-size: 8px;
+    line-height: 11px;
+    letter-spacing: .3px;
+    pointer-events: none;
+}

@@ -8,7 +8,8 @@ import * as DataStore from "@api/DataStore";
 
 const store = DataStore.createStore("BetterImageEditor", "library");
 
-export type Kind = "avatar" | "banner";
+// Discord's own uploadType: AVATAR, BANNER, GUILD_ICON, GUILD_BANNER and the rest
+export type Kind = string;
 export type Group = "original" | "cropped";
 
 // the shape of the cropper's own initialTransform prop. offsetRatio is a fraction of the
@@ -22,6 +23,7 @@ export interface CropState {
 export interface Entry {
     id: string;
     name: string;
+    type?: string;
     kind: Kind;
     group: Group;
     sig: string;
@@ -37,11 +39,14 @@ const thumbKey = (id: string) => `thumb:${id}`;
 
 const THUMB_MAX = 160;
 
-// entries saved before the cropped shelf existed carry no group, and they are all originals.
-// crops saved in pixels rather than ratios cannot be replayed, so they go.
+// entries predating the cropped shelf carry no group and are all originals; ones predating
+// the wider upload types are named in lower case. crops kept in pixels cannot be replayed.
+const LEGACY_KINDS: Record<string, string> = { avatar: "AVATAR", banner: "BANNER" };
+
 export const readIndex = () => DataStore.get<Entry[]>(INDEX, store)
     .then(entries => (entries ?? []).map(({ crop, ...entry }) => ({
         ...entry,
+        kind: LEGACY_KINDS[entry.kind] ?? entry.kind,
         group: entry.group ?? "original" as Group,
         ...(crop?.offsetRatio ? { crop } : {})
     })));
@@ -62,15 +67,6 @@ export const toDataUrl = (blob: Blob) => new Promise<string>((resolve, reject) =
 const fromDataUrl = (url: string) => fetch(url).then(r => r.blob());
 
 const newId = () => `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
-
-export const cropOf = (state: any): CropState => ({
-    zoomRatio: state.zoomRatio,
-    imageRotation: state.imageRotation,
-    offsetRatio: {
-        x: state.dragBoundaries.right ? state.imageTransformCoordinates.x / state.dragBoundaries.right : 0,
-        y: state.dragBoundaries.top ? state.imageTransformCoordinates.y / state.dragBoundaries.top : 0
-    }
-});
 
 // keeps the source aspect so the strip can crop it to a circle or a wide tile in CSS
 function thumbnail(source: Blob) {
@@ -117,7 +113,7 @@ export async function add(file: File, kind: Kind, group: Group, limit: number, f
     await DataStore.set(fileKey(id), file, store);
     await DataStore.set(thumbKey(id), thumb, store);
 
-    const next = [{ id, name: file.name, kind, group, sig, added: Date.now(), from }, ...entries];
+    const next = [{ id, name: file.name, type: file.type, kind, group, sig, added: Date.now(), from }, ...entries];
     const dropped = next.filter(entry => sameShelf(entry) && !entry.pinned).slice(limit);
 
     await writeIndex(next.filter(entry => !dropped.includes(entry)));
@@ -231,6 +227,9 @@ export async function previousApplied(kind: Kind) {
     const worn = await DataStore.get<string[]>(historyKey(kind), store) ?? [];
     return (await readIndex()).find(entry => entry.id === worn[1]) ?? null;
 }
+
+export const currentApplied = (kind: Kind) =>
+    DataStore.get<string[]>(historyKey(kind), store).then(worn => worn?.[0] ?? null);
 
 export async function saveCrop(id: string, crop: CropState) {
     const entries = await readIndex();
