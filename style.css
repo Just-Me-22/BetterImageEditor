@@ -8,7 +8,7 @@
 }
 
 .bie-tab {
-    padding: 3px 8px;
+    padding: 4px 10px;
     border: none;
     border-radius: 4px;
     background: none;
@@ -16,14 +16,24 @@
     font-size: 12px;
     font-weight: 500;
     cursor: pointer;
+    transition: background-color .1s ease-out, color .1s ease-out;
 }
 
-.bie-tab:hover { color: var(--interactive-hover); }
+.bie-tab:hover:not(.bie-on) {
+    background: var(--background-modifier-hover);
+    color: var(--interactive-hover);
+}
+
 .bie-tab:focus-visible { outline: 2px solid var(--focus-primary); }
 
+/* literal white on purpose: themes redefine --white to near black */
 .bie-tab.bie-on {
-    background: var(--background-modifier-selected);
-    color: var(--interactive-active);
+    background: var(--brand-500, #5865f2);
+    color: #fff;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .bie-tab { transition: none; }
 }
 
 .bie-empty {
