@@ -620,6 +620,20 @@ function EditorShelf({ Original, ownProps }: { Original: React.ComponentType<any
         return () => el.remove();
     }, [picked?.id]);
 
+    // the cropper already nudges by 4px on an arrow, 40 with shift, but the handler lives on
+    // two hidden range inputs that only Tab reaches. a click on the picture hands them focus.
+    useEffect(() => {
+        const container = document.querySelector('[class*="editingContainer"]')?.parentElement;
+        if (!container) return;
+
+        const focusPan = () => container
+            .querySelector<HTMLInputElement>('input[type="range"][aria-orientation="horizontal"]')
+            ?.focus({ preventScroll: true });
+
+        container.addEventListener("mouseup", focusPan);
+        return () => container.removeEventListener("mouseup", focusPan);
+    }, [picked?.id]);
+
     const accept = useCallback(async (file: File) => {
         try {
             const id = await add(file, kind, "original", settings.store.librarySize);
