@@ -19,8 +19,6 @@ It also remembers how you framed each picture.
   window.
 - **Banners, server icons, server banners.** Discord gives none of these a recent-image list.
   They get the same shelves as avatars here, each kind with its own pair.
-- **Deletable recents.** Discord's archived avatars appear on the cropped shelf with a trash
-  button, which removes them from Discord's servers through Discord's own endpoint.
 - **Pinning.** Pin a picture and the shelf will not drop it to make room for newer ones.
 - **A way back.** One button returns you to the avatar you wore before this one.
 - **Import and export.** Carry your pictures and their crop positions to another device in one
