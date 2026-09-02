@@ -1,7 +1,8 @@
 # BetterImageEditor
 
 An [Equicord](https://github.com/Equicord/Equicord) userplugin that keeps your own pictures
-inside Discord's image picker and crop window, for both avatars and banners.
+inside Discord's image picker and crop window, for avatars, banners, server icons and server
+banners.
 
 Discord already archives your past avatars but it stores them after cropping so picking
 an old one gives you back the square you cut last time rather than the photo you cut it from.
@@ -16,8 +17,8 @@ It also remembers how you framed each picture.
   of the cropper. A toggle switches between them and each kind of picture gets its own pair.
 - **Paste and drop.** Pasting an image or drop a picture straight onto the picker or the crop
   window.
-- **Banners.** Discord gives banners no recent-image list whatsoever. They get the same shelves
-  as avatars here.
+- **Banners, server icons, server banners.** Discord gives none of these a recent-image list.
+  They get the same shelves as avatars here, each kind with its own pair.
 - **Deletable recents.** Discord's archived avatars appear on the cropped shelf with a trash
   button, which removes them from Discord's servers through Discord's own endpoint.
 - **Pinning.** Pin a picture and the shelf will not drop it to make room for newer ones.
