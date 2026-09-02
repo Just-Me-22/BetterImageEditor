@@ -12,16 +12,9 @@ import { DeleteIcon } from "@components/Icons";
 import { Logger } from "@utils/Logger";
 import definePlugin, { OptionType } from "@utils/types";
 import { chooseFile, saveFile } from "@utils/web";
-import { findStoreLazy } from "@webpack";
-import { Alerts, Button, Constants, FluxDispatcher, React, ReactDOM, RestAPI, Toasts, useCallback, useEffect, useRef, useState, UserStore, useStateFromStores } from "@webpack/common";
+import { Alerts, Button, FluxDispatcher, React, Toasts, useCallback, useEffect, useRef, useState } from "@webpack/common";
 
-import { add, clear, CropState, currentApplied, Entry, exportAll, forget, forgetCrops, getFile, getThumbs, Group, importAll, Kind, previousApplied, readIndex, recordApplied, saveCrop, toDataUrl, togglePin } from "./library";
-
-interface RecentAvatar {
-    id: string;
-    description: string;
-    storageHash: string;
-}
+import { add, byRecency, clear, CropState, currentApplied, Entry, exportAll, forget, forgetCrops, getFile, getThumbs, Group, importAll, Kind, previousApplied, readIndex, recordApplied, saveCrop, toDataUrl, togglePin, touch } from "./library";
 
 interface Picked {
     id: string;
@@ -29,7 +22,6 @@ interface Picked {
     file: File;
 }
 
-const RecentAvatarsStore = findStoreLazy("RecentAvatarsStore");
 const logger = new Logger("BetterImageEditor");
 
 const settings = definePluginSettings({
@@ -78,11 +70,6 @@ const settings = definePluginSettings({
         type: OptionType.BOOLEAN,
         description: "Ask first, instead of keeping the cropped copy automatically",
         default: false
-    },
-    showDiscordRecents: {
-        type: OptionType.BOOLEAN,
-        description: "Show Discord's own recent avatars on the cropped shelf in the editor",
-        default: true
     },
     transfer: {
         type: OptionType.COMPONENT,
@@ -139,6 +126,8 @@ const KIND_NAMES: Record<string, string> = {
 };
 
 const kindName = (kind: Kind) => KIND_NAMES[kind] ?? kind.toLowerCase().replace(/_/g, " ");
+
+const isAnimated = (entry: Entry) => entry.type === "image/gif" || entry.name.toLowerCase().endsWith(".gif");
 const croppedLabel = (kind: Kind) => `Cropped ${kindName(kind)}`;
 
 const EXTENSIONS: Record<string, string> = {
@@ -147,28 +136,6 @@ const EXTENSIONS: Record<string, string> = {
     "image/jpeg": "jpg",
     "image/webp": "webp"
 };
-
-function recentUrl(avatar: RecentAvatar, userId: string, size: number) {
-    return `https://cdn.discordapp.com/avatars/${userId}/archived/${avatar.id}/${avatar.storageHash}.webp?size=${size}`;
-}
-
-// taking over Discord's slot on the picker also took away the component that asked for
-// the archive, so this does what theirs did. the store's own guard stops it repeating.
-async function fetchRecents() {
-    if (!RecentAvatarsStore.shouldFetch) return;
-
-    FluxDispatcher.dispatch({ type: "RECENT_AVATARS_FETCH_START" });
-    try {
-        const { body } = await RestAPI.get({ url: Constants.Endpoints.RECENT_AVATARS });
-        FluxDispatcher.dispatch({
-            type: "RECENT_AVATARS_FETCH_SUCCESS",
-            avatars: body.avatars.map(({ storage_hash, ...rest }: any) => ({ ...rest, storageHash: storage_hash }))
-        });
-    } catch (err) {
-        FluxDispatcher.dispatch({ type: "RECENT_AVATARS_FETCH_FAILURE", error: err });
-        logger.error("could not load Discord's recent avatars", err);
-    }
-}
 
 const PinIcon = (props: any) => (
     <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden {...props}>
@@ -215,11 +182,6 @@ async function importLibrary() {
     }
 }
 
-async function toFile(url: string, name: string, type = "image/webp") {
-    const blob = await fetch(url).then(r => r.blob());
-    return new File([blob], name, { type: blob.type || type });
-}
-
 function useLibrary(kind: Kind) {
     const [group, setGroup] = useState<Group>("original");
     const [version, setVersion] = useState(0);
@@ -237,8 +199,7 @@ function useLibrary(kind: Kind) {
         let live = true;
 
         (async () => {
-            const mine = (await readIndex())
-                .filter(entry => entry.kind === kind && entry.group === group)
+            const mine = byRecency((await readIndex()).filter(entry => entry.kind === kind && entry.group === group))
                 .sort((a, b) => Number(!!b.pinned) - Number(!!a.pinned));
             const blobs = await getThumbs(mine.map(entry => entry.id));
             if (!live) return;
@@ -320,36 +281,38 @@ function usePasteAndDrop(accept: (file: File) => void, active: () => boolean) {
     }, [accept, active]);
 }
 
-function Shelf({ kind, group, entries, thumbs, activeId, wornId, withRecents, onGroup, onPick, onPin, onForget, onPutBack, onPickRecent, onDeleteRecent }: {
+function Shelf({ kind, group, entries, thumbs, activeId, wornId, onGroup, onPick, onPin, onForget, onPutBack }: {
     kind: Kind;
     group: Group;
     entries: Entry[];
     thumbs: Record<string, string>;
     activeId: string | null;
     wornId: string | null;
-    withRecents: boolean;
     onGroup(group: Group): void;
     onPick(entry: Entry): void;
     onPin(entry: Entry): void;
     onForget(entry: Entry, immediate: boolean): void;
     onPutBack?(): void;
-    onPickRecent?(avatar: RecentAvatar): void;
-    onDeleteRecent?(avatar: RecentAvatar): void;
 }) {
-    const recents: RecentAvatar[] = useStateFromStores([RecentAvatarsStore], () => RecentAvatarsStore.getAvatars());
-    const user = UserStore.getCurrentUser();
-
-    // every hook here runs unconditionally. folding settings.use into the && chain below
-    // short-circuits it away on the originals tab and changes the hook count between renders.
-    const { showDiscordRecents } = settings.use(["showDiscordRecents"]);
-    const wantsRecents = withRecents && kind === "AVATAR";
-
-    useEffect(() => {
-        if (wantsRecents) fetchRecents();
-    }, [wantsRecents]);
-
-    const showRecents = Boolean(wantsRecents && group === "cropped" && showDiscordRecents && user && recents.length);
     const shape = SQUARE.has(kind) ? "bie-square" : "bie-wide";
+
+    const [hovered, setHovered] = useState<string | null>(null);
+    const [playing, setPlaying] = useState<Record<string, string>>({});
+    const played = useRef<string[]>([]);
+
+    useEffect(() => () => played.current.forEach(URL.revokeObjectURL), []);
+
+    const play = useCallback(async (entry: Entry) => {
+        setHovered(entry.id);
+        if (!isAnimated(entry) || playing[entry.id]) return;
+
+        const blob = await getFile(entry.id);
+        if (!blob) return;
+
+        const url = URL.createObjectURL(blob);
+        played.current.push(url);
+        setPlaying(current => ({ ...current, [entry.id]: url }));
+    }, [playing]);
 
     return (
         <div className={`bie-panel ${shape}`}>
@@ -379,14 +342,19 @@ function Shelf({ kind, group, entries, thumbs, activeId, wornId, withRecents, on
 
             <div className="bie-strip" role="group" aria-label="Saved pictures">
                 {entries.map(entry => (
-                    <div key={entry.id} className={`bie-item${entry.pinned ? " bie-pinned" : ""}${entry.id === wornId ? " bie-worn" : ""}${entry.type === "image/gif" ? " bie-animated" : ""}`}>
+                    <div
+                        key={entry.id}
+                        className={`bie-item${entry.pinned ? " bie-pinned" : ""}${entry.id === wornId ? " bie-worn" : ""}`}
+                        onMouseEnter={() => play(entry)}
+                        onMouseLeave={() => setHovered(null)}
+                    >
                         <button
                             type="button"
                             aria-label={entry.name}
                             title={entry.id === wornId ? `${entry.name}
 You are wearing this` : entry.name}
                             className={`bie-thumb${activeId === entry.id ? " bie-active" : ""}`}
-                            style={{ backgroundImage: `url(${thumbs[entry.id]})` }}
+                            style={{ backgroundImage: `url(${(hovered === entry.id && playing[entry.id]) || thumbs[entry.id]})` }}
                             onClick={() => onPick(entry)}
                             onContextMenu={event => {
                                 event.preventDefault();
@@ -415,31 +383,7 @@ You are wearing this` : entry.name}
                     </div>
                 ))}
 
-                {entries.length > 0 && showRecents && <div className="bie-divider" />}
-
-                {showRecents && recents.map(avatar => (
-                    <div key={avatar.id} className="bie-item">
-                        <button
-                            type="button"
-                            aria-label={avatar.description}
-                            title={`${avatar.description}\nFrom Discord's archive`}
-                            className={`bie-thumb bie-archived${activeId === avatar.id ? " bie-active" : ""}`}
-                            style={{ backgroundImage: `url(${recentUrl(avatar, user!.id, 80)})` }}
-                            onClick={() => onPickRecent?.(avatar)}
-                        />
-                        <button
-                            type="button"
-                            className="bie-remove"
-                            aria-label={`Delete ${avatar.description} from Discord`}
-                            title="Delete from Discord's archive. This cannot be undone"
-                            onClick={() => onDeleteRecent?.(avatar)}
-                        >
-                            <DeleteIcon width={10} height={10} />
-                        </button>
-                    </div>
-                ))}
-
-                {!entries.length && !showRecents && (
+                {!entries.length && (
                     <span className="bie-empty">
                         {group === "original"
                             ? "Pictures you pick, paste or drop land here"
@@ -449,26 +393,6 @@ You are wearing this` : entry.name}
             </div>
         </div>
     );
-}
-
-// this one leaves the client: it removes the avatar from Discord's own archive, so it
-// always asks, Shift or not.
-function askToDeleteRecent(avatar: RecentAvatar) {
-    Alerts.show({
-        title: "Delete this from Discord?",
-        body: <p>This removes it from Discord's archive of your past avatars, on their servers, not just from this strip. It cannot be undone.</p>,
-        confirmColor: Button.Colors.RED,
-        confirmText: "Delete",
-        cancelText: "Cancel",
-        onConfirm: async () => {
-            try {
-                await RestAPI.del({ url: Constants.Endpoints.RECENT_AVATARS_DELETE(avatar.id) });
-                FluxDispatcher.dispatch({ type: "RECENT_AVATAR_DELETE", avatarId: avatar.id });
-            } catch (err) {
-                logger.error("Discord refused to delete that avatar", err);
-            }
-        }
-    });
 }
 
 function PickerShelf({ kind, open, complete }: {
@@ -500,6 +424,8 @@ function PickerShelf({ kind, open, complete }: {
         if (!blob) return;
 
         const file = new File([blob], entry.name, { type: blob.type });
+        await touch(entry.id);
+        bump();
 
         // already framed, so it goes straight to the profile editor without the cropper
         if (entry.group === "cropped") {
@@ -508,7 +434,7 @@ function PickerShelf({ kind, open, complete }: {
         }
 
         await hand(entry.id, file, settings.store.rememberCrop ? entry.crop ?? null : null);
-    }, [hand, complete, kind]);
+    }, [hand, complete, kind, bump]);
 
     const onPin = useCallback((entry: Entry) => {
         togglePin(entry.id).then(bump).catch(err => logger.error("could not pin that picture", err));
@@ -524,18 +450,6 @@ function PickerShelf({ kind, open, complete }: {
         }
     }, [kind, hand, bump]);
 
-    const onPickRecent = useCallback(async (avatar: RecentAvatar) => {
-        const user = UserStore.getCurrentUser();
-        if (!user) return;
-
-        try {
-            const file = await toFile(recentUrl(avatar, user.id, 1024), `${avatar.storageHash}.webp`);
-            complete({ imageUri: await toDataUrl(file), file });
-        } catch (err) {
-            logger.error("could not load that avatar", err);
-        }
-    }, [complete]);
-
     usePasteAndDrop(accept, useCallback(() => editorsOpen === 0, []));
 
     return (
@@ -546,14 +460,11 @@ function PickerShelf({ kind, open, complete }: {
             thumbs={thumbs}
             activeId={null}
             wornId={worn}
-            withRecents
             onGroup={setGroup}
             onPick={onPick}
             onPin={onPin}
             onForget={onForget}
             onPutBack={putBack ? () => onPick(putBack) : undefined}
-            onPickRecent={onPickRecent}
-            onDeleteRecent={askToDeleteRecent}
         />
     );
 }
@@ -566,7 +477,6 @@ function EditorShelf({ Original, ownProps }: { Original: React.ComponentType<any
 
     const [picked, setPicked] = useState<Picked | null>(null);
     const [transform, setTransform] = useState<CropState | null>(() => handoff?.transform ?? null);
-    const [slot, setSlot] = useState<HTMLElement | null>(null);
 
     const incomingId = useRef<string | null>(null);
     const pickedId = useRef<string | null>(null);
@@ -607,19 +517,6 @@ function EditorShelf({ Original, ownProps }: { Original: React.ComponentType<any
         return () => { editorsOpen--; };
     }, []);
 
-    // picking remounts the cropper so the crop can be seeded, which destroys the node
-    // this portal hangs off. re-anchor it after every switch.
-    useEffect(() => {
-        const container = document.querySelector('[class*="editingContainer"]');
-        if (!container?.parentElement) return;
-
-        const el = document.createElement("div");
-        container.parentElement.insertBefore(el, container.nextSibling);
-        setSlot(el);
-
-        return () => el.remove();
-    }, [picked?.id]);
-
     // the cropper already nudges by 4px on an arrow, 40 with shift, but the handler lives on
     // two hidden range inputs that only Tab reaches. a click on the picture hands them focus.
     useEffect(() => {
@@ -651,23 +548,14 @@ function EditorShelf({ Original, ownProps }: { Original: React.ComponentType<any
         const blob = await getFile(entry.id);
         if (!blob) return;
 
+        await touch(entry.id);
+        bump();
         await show(entry.id, new File([blob], entry.name, { type: blob.type }), settings.store.rememberCrop ? entry.crop ?? null : null);
-    }, [show]);
+    }, [show, bump]);
 
     const onPin = useCallback((entry: Entry) => {
         togglePin(entry.id).then(bump).catch(err => logger.error("could not pin that picture", err));
     }, [bump]);
-
-    const onPickRecent = useCallback(async (avatar: RecentAvatar) => {
-        const user = UserStore.getCurrentUser();
-        if (!user) return;
-
-        try {
-            await show(avatar.id, await toFile(recentUrl(avatar, user.id, 1024), `${avatar.storageHash}.webp`), null);
-        } catch (err) {
-            logger.error("could not load that avatar", err);
-        }
-    }, [show]);
 
     const keepCropped = useCallback((result: any) => {
         const uri = result?.imageUri;
@@ -714,9 +602,10 @@ function EditorShelf({ Original, ownProps }: { Original: React.ComponentType<any
         : { ...ownProps, onCrop, initialTransform: transform ?? ownProps.initialTransform };
 
     return (
-        <>
-            <Original key={picked?.id ?? "incoming"} {...props} />
-            {slot && ReactDOM.createPortal(
+        <Original
+            key={picked?.id ?? "incoming"}
+            {...props}
+            bieShelf={
                 <ErrorBoundary noop>
                     <Shelf
                         kind={kind}
@@ -725,18 +614,14 @@ function EditorShelf({ Original, ownProps }: { Original: React.ComponentType<any
                         thumbs={thumbs}
                         activeId={picked?.id ?? null}
                         wornId={worn}
-                        withRecents
                         onGroup={setGroup}
                         onPick={onPick}
                         onPin={onPin}
                         onForget={onForget}
-                        onPickRecent={onPickRecent}
-                        onDeleteRecent={askToDeleteRecent}
                     />
-                </ErrorBoundary>,
-                slot
-            )}
-        </>
+                </ErrorBoundary>
+            }
+        />
     );
 }
 
@@ -773,11 +658,26 @@ export default definePlugin({
             }
         },
         {
+            // grouped on purpose: rendering bieShelf without destructuring it throws
+            find: '"SET_IMAGE_ZOOM_RATIO"',
+            group: true,
+            replacement: [
+                {
+                    match: /\{file:(\i),imageUri:/,
+                    replace: "{bieShelf,file:$1,imageUri:"
+                },
+                {
+                    match: /(\(0,\i\.jsx\)\(\i\.A,\{id:\i,children:)/,
+                    replace: "bieShelf,$1"
+                }
+            ]
+        },
+        {
             find: 'displayName="RecentAvatarsStore"',
             replacement: {
-                // takes over the slot Discord renders its own recent avatars into
-                match: /(uploadType:(\i),guild:\i,handleOpenImageEditingModal:(\i),[\s\S]{0,500}?)\i&&\(0,\i\.jsx\)\(\i,\{onComplete:(\i),returnRef:\i\}\)/,
-                replace: "$1$self.pickerRow($2,$3,$4)"
+                // our shelf goes in above Discord's own list of archived avatars
+                match: /(uploadType:(\i),guild:\i,handleOpenImageEditingModal:(\i),[\s\S]{0,500}?)(\i&&\(0,\i\.jsx\)\(\i,\{onComplete:(\i),returnRef:\i\}\))/,
+                replace: "$1$self.pickerRow($2,$3,$5),$4"
             }
         }
     ],

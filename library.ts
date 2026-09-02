@@ -30,6 +30,7 @@ export interface Entry {
     added: number;
     crop?: CropState;
     pinned?: boolean;
+    used?: number;
     from?: string;
 }
 
@@ -113,7 +114,7 @@ export async function add(file: File, kind: Kind, group: Group, limit: number, f
     await DataStore.set(fileKey(id), file, store);
     await DataStore.set(thumbKey(id), thumb, store);
 
-    const next = [{ id, name: file.name, type: file.type, kind, group, sig, added: Date.now(), from }, ...entries];
+    const next = byRecency([{ id, name: file.name, type: file.type, kind, group, sig, added: Date.now(), from }, ...entries]);
     const dropped = next.filter(entry => sameShelf(entry) && !entry.pinned).slice(limit);
 
     await writeIndex(next.filter(entry => !dropped.includes(entry)));
@@ -201,6 +202,19 @@ export async function forgetCrops() {
     await writeIndex(entries);
 
     return framed.length;
+}
+
+// the shelf is most-recently-used: picking a picture sends it to the front
+export const byRecency = (entries: Entry[]) =>
+    [...entries].sort((a, b) => (b.used ?? b.added) - (a.used ?? a.added));
+
+export async function touch(id: string) {
+    const entries = await readIndex();
+    const entry = entries.find(entry => entry.id === id);
+    if (!entry) return;
+
+    entry.used = Date.now();
+    await writeIndex(byRecency(entries));
 }
 
 export async function togglePin(id: string) {

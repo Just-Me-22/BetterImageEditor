@@ -20,12 +20,14 @@
     transition: background-color .1s ease-out, color .1s ease-out;
 }
 
+.bie-tab:focus-visible {
+    outline: 2px solid var(--focus-primary);
+}
+
 .bie-tab:hover:not(.bie-on) {
     background: var(--background-modifier-hover);
     color: var(--interactive-hover);
 }
-
-.bie-tab:focus-visible { outline: 2px solid var(--focus-primary); }
 
 /* literal white on purpose: themes redefine --white to near black */
 .bie-tab.bie-on {
@@ -33,8 +35,28 @@
     color: #fff;
 }
 
-@media (prefers-reduced-motion: reduce) {
-    .bie-tab { transition: none; }
+.bie-action {
+    padding: 4px 10px;
+    border: none;
+    border-radius: 4px;
+    background: none;
+    color: var(--text-muted);
+    font-size: 12px;
+    cursor: pointer;
+}
+
+.bie-action:hover {
+    background: var(--background-modifier-hover);
+    color: var(--interactive-hover);
+}
+
+.bie-action:focus-visible {
+    outline: 2px solid var(--focus-primary);
+}
+
+/* only the action that follows the tabs gets pushed right; later ones sit beside it */
+.bie-tab + .bie-action {
+    margin-left: auto;
 }
 
 .bie-empty {
@@ -49,20 +71,30 @@
     gap: 6px;
     padding: 8px 4px 6px;
     min-height: 38px;
-    overflow-x: auto;
-    overflow-y: hidden;
+    overflow: auto hidden;
+}
+
+.bie-wide .bie-strip {
+    gap: 8px;
 }
 
 /* the bar keeps its space so nothing shifts, and only shows itself on hover */
-.bie-strip::-webkit-scrollbar { height: 6px; }
-.bie-strip::-webkit-scrollbar-track { background: transparent; }
+.bie-strip::-webkit-scrollbar {
+    height: 6px;
+}
+
+.bie-strip::-webkit-scrollbar-track {
+    background: transparent;
+}
 
 .bie-strip::-webkit-scrollbar-thumb {
     background: transparent;
     border-radius: 3px;
 }
 
-.bie-strip:hover::-webkit-scrollbar-thumb { background: var(--background-modifier-accent); }
+.bie-strip:hover::-webkit-scrollbar-thumb {
+    background: var(--background-modifier-accent);
+}
 
 .bie-item {
     position: relative;
@@ -83,86 +115,33 @@
     transition: border-color .1s ease-out, transform .1s ease-out;
 }
 
+.bie-thumb:focus-visible {
+    outline: 2px solid var(--focus-primary);
+    outline-offset: 2px;
+}
+
+.bie-thumb.bie-active {
+    border-color: var(--brand-500, #5865f2);
+}
+
 .bie-wide .bie-thumb {
     width: 96px;
     height: 40px;
     border-radius: 6px;
 }
 
-.bie-wide .bie-strip {
-    gap: 8px;
+.bie-worn .bie-thumb {
+    box-shadow: 0 0 0 2px var(--status-positive, #23a55a);
 }
 
-.bie-item:hover .bie-thumb { transform: scale(1.06); }
-.bie-thumb:focus-visible { outline: 2px solid var(--focus-primary); outline-offset: 2px; }
-.bie-thumb.bie-active { border-color: var(--brand-500, #5865f2); }
-.bie-thumb.bie-archived { opacity: .75; }
-.bie-item:hover .bie-archived { opacity: 1; }
-
-.bie-remove {
-    position: absolute;
-    top: -2px;
-    right: -2px;
-    width: 16px;
-    height: 16px;
-    padding: 0;
-    display: none;
-    place-items: center;
-    border: none;
-    border-radius: 50%;
-    background: var(--background-tertiary);
-    color: var(--interactive-normal);
-    cursor: pointer;
+.bie-item:hover .bie-thumb {
+    transform: scale(1.06);
 }
 
-.bie-item:hover .bie-remove,
-.bie-item:focus-within .bie-remove { display: grid; }
-
-.bie-remove:hover { color: var(--status-danger); }
-.bie-remove:focus-visible { outline: 2px solid var(--focus-primary); }
-
-.bie-divider {
-    width: 1px;
-    height: 24px;
-    margin: 0 2px;
-    background: var(--background-modifier-accent);
-    flex: 0 0 auto;
-}
-
-@media (prefers-reduced-motion: reduce) {
-    .bie-thumb { transition: none; }
-    .bie-item:hover .bie-thumb { transform: none; }
-}
-
-.bie-buttons {
-    display: flex;
-    gap: 8px;
-}
-
-.bie-action {
-    padding: 4px 10px;
-    border: none;
-    border-radius: 4px;
-    background: none;
-    color: var(--text-muted);
-    font-size: 12px;
-    cursor: pointer;
-}
-
-/* only the action that follows the tabs gets pushed right; later ones sit beside it */
-.bie-tab + .bie-action { margin-left: auto; }
-.bie-action:hover { color: var(--interactive-hover); background: var(--background-modifier-hover); }
-.bie-action:focus-visible { outline: 2px solid var(--focus-primary); }
-
-.bie-action.bie-on {
-    background: var(--brand-500, #5865f2);
-    color: #fff;
-}
-
+.bie-remove,
 .bie-pin {
     position: absolute;
     top: -2px;
-    left: -2px;
     width: 16px;
     height: 16px;
     padding: 0;
@@ -175,8 +154,37 @@
     cursor: pointer;
 }
 
+.bie-remove {
+    right: -2px;
+}
+
+.bie-pin {
+    left: -2px;
+}
+
+.bie-remove:hover {
+    color: var(--status-danger);
+}
+
+.bie-pin:hover {
+    color: var(--interactive-active);
+}
+
+.bie-remove:focus-visible,
+.bie-pin:focus-visible {
+    outline: 2px solid var(--focus-primary);
+}
+
+.bie-pin.bie-on {
+    color: var(--brand-500, #5865f2);
+}
+
+.bie-item:hover .bie-remove,
+.bie-item:focus-within .bie-remove,
 .bie-item:hover .bie-pin,
-.bie-item:focus-within .bie-pin { display: grid; }
+.bie-item:focus-within .bie-pin {
+    display: grid;
+}
 
 .bie-pinned::before {
     content: "";
@@ -191,27 +199,22 @@
 }
 
 .bie-pinned:hover::before,
-.bie-pinned:focus-within::before { display: none; }
-
-.bie-pin:hover { color: var(--interactive-active); }
-.bie-pin.bie-on { color: var(--brand-500, #5865f2); }
-.bie-pin:focus-visible { outline: 2px solid var(--focus-primary); }
-
-.bie-worn .bie-thumb {
-    box-shadow: 0 0 0 2px var(--status-positive, #23a55a);
+.bie-pinned:focus-within::before {
+    display: none;
 }
 
-.bie-animated::after {
-    content: "GIF";
-    position: absolute;
-    bottom: 0;
-    left: 0;
-    padding: 0 3px;
-    border-radius: 3px;
-    background: var(--background-tertiary);
-    color: var(--text-muted);
-    font-size: 8px;
-    line-height: 11px;
-    letter-spacing: .3px;
-    pointer-events: none;
+.bie-buttons {
+    display: flex;
+    gap: 8px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .bie-tab,
+    .bie-thumb {
+        transition: none;
+    }
+
+    .bie-item:hover .bie-thumb {
+        transform: none;
+    }
 }
