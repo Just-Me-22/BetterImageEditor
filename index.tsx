@@ -632,7 +632,7 @@ let wrapped: React.ComponentType<any> | null = null;
 
 export default definePlugin({
     name: "BetterImageEditor",
-    description: "Keeps your own pictures on the image picker and under the crop window, on an uncropped shelf and a cropped one, for avatars, banners, server icons, server banners, event covers, home headers, decorations, widget covers, widget images and video backgrounds. Remembers how you framed each picture, and takes a paste or a dropped file straight in.",
+    description: "Keeps your own pictures on the image picker and under the crop window, on an uncropped shelf and a cropped one, for avatars, banners, server icons, server banners, event covers, home headers, widget covers, widget images and video backgrounds. Remembers how you framed each picture, and takes a paste or a dropped file straight in.",
     authors: [{ name: "heart_menace", id: 281162701303185408n }],
     settings,
 
