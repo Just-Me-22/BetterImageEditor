@@ -4,13 +4,6 @@ An [Equicord](https://github.com/Equicord/Equicord) userplugin that keeps your o
 inside Discord's image picker and crop window, for avatars, banners, server icons, server
 banners, event covers, home headers, widget covers and widget images.
 
-Discord already archives your past avatars but it stores them after cropping so picking
-an old one gives you back the square you cut last time rather than the photo you cut it from.
-There is nothing at all for banners. This plugin keeps the file you chose before
-the cropper touches it so you can reframe a picture later.
-
-It also remembers how you framed each picture.
-
 ## What it adds
 
 - **Two shelves.** Originals holds the uncropped files you picked. Cropped holds what came out
